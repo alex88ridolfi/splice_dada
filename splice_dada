@@ -124,24 +124,26 @@ def check_continuity_of_subbands(list_subbands_float):
         return bw_spacing_MHz
 
 
-        
+       
 #DEFAULT PARAMETERS
-string_version = "1.0 (06June2019)"
+string_version = "1.0.1 (18Jun2019)"
 subbands_spacing_MHz = 0
 outfile_basename = "joined"
 verbosity_level = 1
-
+blocksize_bytes = 100000000
+flag_custom_blocksize = 0
 #SHELL ARGUMENT
 if (len(sys.argv) == 1 or ("-h" in sys.argv) or ("-help" in sys.argv) or ("--help" in sys.argv)):
         print "USAGE: %s -dadafiles <files.dada> [-o outfile_basename] [{-Q | -v | -V}]" % (os.path.basename(sys.argv[0]))
         print
-        print "%10s  %-32s:  %-50s" % ("-h", "", "Print help")
-        print "%10s  %-32s:  %-50s %s" % ("-dadafiles", "\"*.dada\"", "Input DADA baseband files (.dada)", "")
-        print "%10s  %-32s:  %-50s" % ("-o", "\"basename\" [Default: \"joined\"]", "Specify output file basename")
-        print "%10s  %-32s:  %-50s" % ("-Q", "", "Quiet mode - do not print anything")
-        print "%10s  %-32s:  %-50s" % ("-v", "", "Verbose mode - print more useful info about the processing")
-        print "%10s  %-32s:  %-50s" % ("-V", "", "Very verbose mode - print everything to debug issues")
-        print "%10s  %-32s:  %-50s" % ("-version", "", "Print code version")
+        print "%10s  %-36s:  %-50s" % ("-h", "", "Print help")
+        print "%10s  %-36s:  %-50s %s" % ("-dadafiles", "\"*.dada\"", "Input DADA baseband files (.dada)", "")
+        print "%10s  %-36s:  %-50s" % ("-o", "\"basename\" [Default: \"joined\"]", "Specify output file basename")
+        print "%10s  %-36s:  %-50s" % ("-blocksize", "N_bytes [Default: \"full file size\"]", "Specify the size of each block to process at each iteration")
+        print "%10s  %-36s:  %-50s" % ("-Q", "", "Quiet mode - do not print anything")
+        print "%10s  %-36s:  %-50s" % ("-v", "", "Verbose mode - print more useful info about the processing")
+        print "%10s  %-36s:  %-50s" % ("-V", "", "Very verbose mode - print everything to debug issues")
+        print "%10s  %-36s:  %-50s" % ("-version", "", "Print code version")
         print
         exit()
 elif (("-version" in sys.argv) or ("--version" in sys.argv)):
@@ -156,7 +158,10 @@ else:
                         else:
                                 list_files = string_files.replace(" ","").split(",")
                         N_datfiles = len(list_files)
-
+                        
+                elif (sys.argv[j] == "-blocksize"):
+                        blocksize_bytes = int(sys.argv[j+1])
+                        flag_custom_blocksize = 1
                 elif (sys.argv[j] == "-o"):
                         outfile_basename = sys.argv[j+1]
                 elif (sys.argv[j] == "-Q"):
@@ -179,7 +184,7 @@ if verbosity_level >= 1:
         print
         print "#"*62
         print "#" + " "*24 + "SPLICE_DADA" + " "*25 + "#"
-        print "#" + " "*22 + "%s" % (string_version) + " "*22 + "#"
+        print "#" + " "*21 + "%s" % (string_version) + " "*22 + "#"
 	print "#"*62
         print
         print "================================"
@@ -187,6 +192,12 @@ if verbosity_level >= 1:
         print "Input DADA files:"
         for n in range(N_datfiles):
                 print "%3d/%d: %s" % (n+1, N_datfiles, list_files[n])
+
+        
+if (blocksize_bytes%4 > 0):
+        blocksize_bytes = blocksize_bytes - (blocksize_bytes % 4)
+        if verbosity_level >= 1:
+                print "WARNING: the block size in bytes must be a multiple of 4! Rounding down to %d..." % (blocksize_bytes)
 
 
         
@@ -274,13 +285,25 @@ if verbosity_level >= 1:
 freq_new_MHz = np.average(list_subbands_float)
 
 
+if verbosity_level >= 1:
+        if flag_custom_blocksize == 0:
+                print "Block size not specified. Using default value of 100 MB per subband."
+                print
+        else:
+                print "Using custom block size of %.2f MB per subband." % (blocksize_bytes/1.0e6)
+                print
+
+
+                
 ##################################################################
 # LOOP OVER THE FILES, JOIN THE SUBBANDS
 ##################################################################
 
+
+
 for n_file in range(Nfiles_per_subband):
         outfile_name = "%s_subint_%04d.dada" % (outfile_basename, n_file)
-        if verbosity_level >= 1:
+        if verbosity_level >= 2:
                 print "Joining file %3d/%d \"%s\"..." % (n_file+1, Nfiles_per_subband, outfile_name), ; sys.stdout.flush()
 
         list_files_to_join = []
@@ -291,8 +314,6 @@ for n_file in range(Nfiles_per_subband):
         for j_subband in range(N_subbands):
                 subband_key = "%.2f" % (list_subbands_float[j_subband])
                 if verbosity_level >= 2:
-                        print
-                        print
                         print "Subint %d / band %s --> Adding %s" % (n_file, subband_key, dict_subbands[subband_key][n_file])
                 list_files_to_join.append(dict_subbands[subband_key][n_file])
         if verbosity_level >= 2:
@@ -428,43 +449,110 @@ for n_file in range(Nfiles_per_subband):
 
 
         if verbosity_level >= 2:
-                print "Joining the subbands and writing out file '%s'..." % (outfile_name), ; sys.stdout.flush() 
+                print "Joining the subbands and writing out file '%s'...\n" % (outfile_name), ; sys.stdout.flush() 
         
         array_buffer = np.array([], dtype=np.uint8)
-        
+
         N_time_samples = file_size_subint / 4
+        
+                
         if verbosity_level >= 3:
                 print "N_time_samples = ", N_time_samples
+                        
+        if blocksize_bytes > file_size_subint:
+                if verbosity_level >= 1:
+                        print "WARNING: selected block size is larger than the actual input file size! Setting the block size = file size..."
+                        print
+                blocksize_bytes = file_size_subint                
+                N_time_samples_block = N_time_samples
+        else: 
+                N_time_samples_block = blocksize_bytes / 4
+                
+        N_blocks_to_read = int( N_time_samples / N_time_samples_block )  # +1 last block, done separately
 
-
-        N_time_samples_block = N_time_samples
+        last_bytes = file_size_subint % blocksize_bytes
+        
+        #print
+        #print "N_time_samples       = %d " % (N_time_samples)
+        #print "N_time_samples_block = %d " % (N_time_samples_block)
+        #print "N_blocks_to_read = %d " % (N_blocks_to_read)
 
 
         # Open the files to join and read N_time_samples_block in each, after skipping the 4096 bytes of the header 
         list_open_files = []
-        list_array_read_blocks = []
-        for j in range(N_subbands):
-                #print "Reading %s..." % (list_files_to_join[j])
-                list_open_files.append( open(list_files_to_join[j], 'r') )
-                list_array_read_blocks.append([])
-                
-        for j in range(N_subbands):
-                list_open_files[j].seek(4096) #Skip the header
 
-        for j in range(N_subbands):
-                list_array_read_blocks[j] = np.fromfile(list_open_files[j], dtype="uint8", count=4*N_time_samples_block).reshape(N_time_samples_block, 4)
-
-        if verbosity_level >= 3:
-                for j in range(N_subbands):
-                        print "list_array_read_blocks[BAND=%d=%s MHz] = %d elements = %d bytes = %d MB" % (j, list_subbands_str[j], len(list_array_read_blocks[j]), list_array_read_blocks[j].size, list_array_read_blocks[j].size/1000000)
-
-
-        array_buffer = np.concatenate(list_array_read_blocks, axis=1)
+        
         outfile = open(outfile_name, 'ab')
-        outfile.write(bytearray(array_buffer))
-        outfile.close()
+        for i in range(N_blocks_to_read):
+                list_array_read_blocks = []
+                if verbosity_level == 1:
+		        sys.stdout.write('\rJoining file %3d/%d \"%s\" (processing block %d/%d)...' % (n_file+1, Nfiles_per_subband, outfile_name, i+1, N_blocks_to_read)), ; sys.stdout.flush()
+                        sys.stdout.flush()
 
-        print "done!"
+
+                if verbosity_level >= 2:
+                        print "Reading block %3d/%d (%d bytes)..." % (i+1, N_blocks_to_read, blocksize_bytes)
+                        
+                        
+                for j in range(N_subbands):
+                        #print "Reading %s..." % (list_files_to_join[j])
+                        list_open_files.append( open(list_files_to_join[j], 'r') )
+                        list_array_read_blocks.append([])
+                
+                for j in range(N_subbands):
+                        if i==0:
+                                list_open_files[j].seek(4096) #Skip the header
+                        else:
+                                list_open_files[j].seek(4096 + i*blocksize_bytes)
+
+                for j in range(N_subbands):
+                        list_array_read_blocks[j] = np.fromfile(list_open_files[j], dtype="uint8", count=4*N_time_samples_block).reshape(N_time_samples_block, 4)
+
+                if verbosity_level >= 3:
+                        for j in range(N_subbands):
+                                print "list_array_read_blocks[BAND=%d=%s MHz] = %d elements = %d bytes = %d MB" % (j, list_subbands_str[j], len(list_array_read_blocks[j]), list_array_read_blocks[j].size, list_array_read_blocks[j].size/1000000)
+                
+                array_buffer = np.concatenate(list_array_read_blocks, axis=1)
+                outfile.write(bytearray(array_buffer))
+
+        ############################################
+        # LEFT-OVER BYTES
+        ############################################
+        if last_bytes > 0:
+                list_array_read_blocks = []
+                N_time_samples_last_bytes = last_bytes / 4
+                if verbosity_level == 1:
+		        sys.stdout.write('\rJoining file %3d/%d \"%s\" (processing last bytes)...' % (n_file+1, Nfiles_per_subband, outfile_name)), ; sys.stdout.flush()
+                        sys.stdout.flush()
+
+                if verbosity_level >= 2:
+                        print "Reading last %d bytes..." % (last_bytes)
+                        
+                for j in range(N_subbands):
+                        if verbosity_level >= 2:
+                                print "Reading %s..." % (list_files_to_join[j])
+                        list_open_files.append( open(list_files_to_join[j], 'r') )
+                        list_array_read_blocks.append([])
+                
+                for j in range(N_subbands):
+                        list_open_files[j].seek(4096 + N_blocks_to_read*blocksize_bytes)
+
+                for j in range(N_subbands):
+                        list_array_read_blocks[j] = np.fromfile(list_open_files[j], dtype="uint8", count=4*N_time_samples_last_bytes).reshape(N_time_samples_last_bytes, 4)
+
+                if verbosity_level >= 3:
+                        for j in range(N_subbands):
+                                print "list_array_read_blocks[BAND=%d=%s MHz] = %d elements = %d bytes = %d MB" % (j, list_subbands_str[j], len(list_array_read_blocks[j]), list_array_read_blocks[j].size, list_array_read_blocks[j].size/1000000)
+                                        
+                array_buffer = np.concatenate(list_array_read_blocks, axis=1)
+                outfile.write(bytearray(array_buffer))
+
+        
+
+                
+        outfile.close()
+        if verbosity_level >= 1:
+                print "done!"
 
         
         
